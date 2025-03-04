@@ -17,7 +17,7 @@ Connect to your Ascend account using the "🚀 Ascend: API key" command to link 
 
 ## Requirements
 
-- VS Code 1.97.0 or higher
+- VS Code 1.74.0 or higher
 - A GitHub repository
 - An Ascend account and API key
 
