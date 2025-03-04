@@ -17,7 +17,7 @@
   "publisher": "Ascend",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/asc-end/vscode-extension"
   },
   "license": "CC-BY-NC-ND-4.0",
   "main": "./dist/extension.js",
