@@ -1,10 +1,9 @@
-import dayjs from 'dayjs';
 import * as vscode from 'vscode';
-import fetch from 'node-fetch';
+import { MAX_TIME_BETWEEN_RECORDS, ONE_HOUR_IN_MS, TimeTracker } from './timeTracking';
+import dayjs from 'dayjs';
 
-// 5 minutes
-const MAX_TIME_BETWEEN_HEARTBEATS = 5 * 60 * 1000
 const DEBOUNCE = 300
+const DEFAULT_API_URL = 'https://api.ascend.sh';
 
 export class Ascend {
     private disposable: vscode.Disposable | null = null;
@@ -16,98 +15,59 @@ export class Ascend {
     private repoUrl: string | undefined
     public apiKey: string | undefined
     private apiUrl: string | undefined
-    private currentChallenge: any
+    private challenge: any
     private statusBarItem: vscode.StatusBarItem;
     private statusBarVisible: boolean = true;
+    public timeTracker: TimeTracker;
 
-    async getRepo() {
+    private async getRepo() {
         try {
             const gitExtension = vscode.extensions.getExtension('vscode.git')?.exports;
-            if (gitExtension) {
-                const gitAPI = gitExtension.getAPI(1);
-                console.log(gitAPI.repositories)
-                const repo = gitAPI.repositories[0];
-                if (repo) {
-                    // Get the remote URL which contains the repo name
-                    const remotes = repo.state.remotes;
-                    if (remotes.length > 0) {
-                        // should try for different remotes
-                        const remoteUrl = remotes[0].fetchUrl || remotes[0].pushUrl;
-                        console.log(remotes[0])
-                        this.repoUrl = remoteUrl
-                            ?.replace(/^git@github\.com:/, 'https://github.com/')
-                            .replace(/\.git$/, '');
-                        if (remoteUrl) {
-                            // Extract repo name from remote URL
-                            const match = remoteUrl.match(/[\/:]([^\/]+?)(\.git)?$/);
-                            if (match) {
-                                this.repoName = match[1];
-                            }
-                        }
-                    }
-                }
-            }
+            if (!gitExtension) return;
+
+            const gitAPI = gitExtension.getAPI(1);
+            const repo = gitAPI.repositories[0];
+            if (!repo?.state.remotes.length) return;
+
+            const remote = repo.state.remotes[0];
+            const remoteUrl = remote.fetchUrl || remote.pushUrl;
+            if (!remoteUrl) return;
+
+            this.repoUrl = remoteUrl
+                .replace(/^git@github\.com:/, 'https://github.com/')
+                .replace(/\.git$/, '');
+
+            const match = remoteUrl.match(/[\/:]([^\/]+?)(\.git)?$/);
+            this.repoName = match?.[1] ?? null;
+
         } catch (error) {
             console.error("Error getting repo name:", error);
         }
     }
 
-    private async loadDailyCodingTime() {
-        if (!this.repoName) return
-
-        const today = new Date().toISOString().split('T')[0];
-        const storageKey = `ascend.codingTime.${this.repoName}.${today}`;
-        const storedTime = this.context.globalState.get<number>(storageKey);
-        this.dailyCodingTime = storedTime ?? 0;
-    }
-
-    private async saveDailyCodingTime() {
-        if (!this.repoName) return
-
-        const today = dayjs().utc().format('YYYY-MM-DD');
-        const storageKey = `ascend.codingTime.${this.repoName}.${today}`;
-        await this.context.globalState.update(storageKey, this.dailyCodingTime);
-    }
-
     private async validateDay() {
-        if (!this.apiKey || !this.currentChallenge) return
+        if (!this.apiKey || !this.challenge) return
 
         try {
             const response = await fetch(`${this.apiUrl}/vscode/challenge/validate-day`, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${this.apiKey}`,
+                    'x-api-key': this.apiKey,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    solana_id: this.currentChallenge.solana_id,
-                    author: this.currentChallenge.author
-                })
+                body: JSON.stringify(this.challenge)
             });
 
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            await response.json();
 
-            const result = await response.json();
-            console.log("Day validated:", result);
-
+            await this.getCurrentChallenge()
         } catch (error) {
             console.error("Error validating day:", error);
         }
     }
 
-    constructor(context: vscode.ExtensionContext) {
-        this.context = context
-
-        this.statusBarVisible = this.context.globalState.get("ascend.statusBar.visible", true);
-        this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-        if (this.statusBarVisible) this.statusBarItem.show();
-        
-        context.subscriptions.push(this.statusBarItem);
-
-        this.initialize()
-    }
-
-    async getCurrentChallenge() {
+    public async getCurrentChallenge() {
         if (!this.apiKey || !this.repoUrl) return
 
         try {
@@ -121,7 +81,7 @@ export class Ascend {
 
             if (!response.ok) return
             const challenge = await response.json();
-            if (!challenge.error) this.currentChallenge = challenge;
+            if (!(challenge as any).error) this.challenge = challenge;
             this.updateStatusBar();
 
         } catch (error) {
@@ -133,17 +93,32 @@ export class Ascend {
         }
     }
 
+    constructor(context: vscode.ExtensionContext) {
+        this.context = context
+
+        this.statusBarVisible = this.context.globalState.get("ascend.statusBar.visible", true);
+        this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+        if (this.statusBarVisible) this.statusBarItem.show();
+
+        context.subscriptions.push(this.statusBarItem);
+
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+        this.timeTracker = new TimeTracker(context, timezone);
+
+        this.initialize()
+    }
+
     private async initialize() {
         // wait for the github extension to load
         await new Promise(resolve => setTimeout(resolve, 3000));
-        this.apiKey = await this.context.secrets.get("ascend.apiKey")
-        this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || 'https://api.ascend.com'
+        this.apiKey = await this.context.secrets.get("ascend.apiKey");
+        this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || DEFAULT_API_URL;
 
         await this.getRepo()
         if (!this.repoName) return
 
         await this.getCurrentChallenge()
-        await this.loadDailyCodingTime()
+        this.dailyCodingTime = await this.timeTracker.getTodayTime(this.repoName);
         this.updateStatusBar()
         this.setupEventListeners()
     }
@@ -151,55 +126,65 @@ export class Ascend {
     private setupEventListeners(): void {
         let subscriptions: vscode.Disposable[] = []
 
-        vscode.window.onDidChangeTextEditorSelection(this.onChangeSelection, this, subscriptions)
-        vscode.window.onDidChangeActiveTextEditor(this.onChangeTab, this, subscriptions)
-        vscode.workspace.onDidSaveTextDocument(this.onSave, this, subscriptions)
+        vscode.window.onDidChangeTextEditorSelection((e) => e.kind === vscode.TextEditorSelectionChangeKind.Command ? null : this.onEvent(), this, subscriptions)
+        vscode.window.onDidChangeActiveTextEditor(this.onEvent, this, subscriptions)
+        vscode.workspace.onDidSaveTextDocument(this.onEvent, this, subscriptions)
 
         this.disposable = vscode.Disposable.from(...subscriptions);
     }
 
-    private onChangeSelection(e: vscode.TextEditorSelectionChangeEvent) {
-        if (e.kind === vscode.TextEditorSelectionChangeKind.Command) return;
-        this.onEvent()
-    }
-
-    private onChangeTab() { this.onEvent() }
-    private onSave() { this.onEvent() }
-
     private onEvent() {
-        if (this.debounceTimeoutId) clearTimeout(this.debounceTimeoutId)
+        if (this.debounceTimeoutId) clearTimeout(this.debounceTimeoutId);
 
-        this.debounceTimeoutId = setTimeout(() => {
-            const now = Date.now();
-            if (this.lastActivityTime > 0) {
-                const timeDiff = now - this.lastActivityTime;
-                if (timeDiff < MAX_TIME_BETWEEN_HEARTBEATS) {
-                    this.dailyCodingTime += timeDiff;
-                    this.saveDailyCodingTime();
-                    this.updateStatusBar();
-                    if (this.currentChallenge && this.dailyCodingTime >= this.currentChallenge.challengedata.duration * 60 * 60 * 1000) {
-                        this.validateDay()
-                    }
-                    this.lastActivityTime = now;
+        this.debounceTimeoutId = setTimeout(async () => {
+            const now = dayjs().utc().valueOf();
+            if (!this.lastActivityTime || !this.repoName) return this.lastActivityTime = now;
+
+            this.lastActivityTime = now;
+
+            const timeDiff = now - this.lastActivityTime;
+            if (timeDiff >= MAX_TIME_BETWEEN_RECORDS) return
+
+            const start = this.lastActivityTime
+            await this.timeTracker.recordSession({ start, end: now }, this.repoName);
+
+            this.dailyCodingTime = await this.timeTracker.getTodayTime(this.repoName);
+            this.updateStatusBar();
+
+            if (this.challenge?.challengedata?.duration) {
+                const goal = this.challenge.challengedata.duration * ONE_HOUR_IN_MS;
+                const start = dayjs.utc(this.challenge.started).add(this.challenge.nb_done, "day")
+                const isDayDone = start.isAfter(dayjs())
+
+                if (this.dailyCodingTime >= goal && !isDayDone) {
+                    await this.validateDay();
                 }
             }
-            this.lastActivityTime = now;
-        }, DEBOUNCE)
+        }, DEBOUNCE);
     }
 
-    private updateStatusBar() {
-        if (!this.statusBarVisible) return;
-        if (!this.apiKey) return this.statusBarItem.text = "$(rocket) Ascend: Click to setup";
-        if (!this.currentChallenge) return this.statusBarItem.text = "$(rocket) Ascend: No active challenge";
+    private async updateStatusBar() {
+        if (!this.statusBarVisible || !this.repoName || !this.apiKey) return;
+        if (!this.challenge) return this.statusBarItem.text = "$(rocket) Ascend: No active challenge";
 
-        const totalSeconds = Math.round(this.dailyCodingTime / 1000);
-        const hours = Math.floor(totalSeconds / 3600);
-        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const nbDone = this.challenge.nb_done;
 
-        const targetHours = this.currentChallenge.challengedata?.duration;
-        const progress = (this.dailyCodingTime / (60 * 60 * 10)) / targetHours;
+        let start = dayjs.utc(this.challenge.started).add(nbDone, "day")
 
-        this.statusBarItem.text = `$(rocket) Ascend: ${hours}h ${minutes}m / ${targetHours}h (${parseFloat(progress.toFixed(2))}%)`;
+        const dayDone = start.isAfter(dayjs())
+        if (dayDone) start = start.subtract(1, "day")
+        const end = start.add(1, "day")
+
+        const time = await this.timeTracker.getTimeInWindow({ start: start.valueOf(), end: end.valueOf() }, this.repoName)
+        const { hours, minutes } = this.timeTracker.separateTime(time)
+
+        const goal = this.challenge.challengedata?.duration;
+        const progress = (time / (goal * ONE_HOUR_IN_MS) * 100).toFixed();
+        const dueTime = end.tz(this.timeTracker.timezone).format("HH:mm")
+
+        const text = `$(rocket) ${hours}h ${minutes}m${dayDone ? ' | Day done $(check)' : ` (${progress}%) | Due ${dueTime}`} | Day ${dayDone ? nbDone - 1 : nbDone} / ${this.challenge.time}`
+
+        this.statusBarItem.text = text;
     }
 
     public toggleStatusBar() {

@@ -20,6 +20,7 @@ export function activate(context: vscode.ExtensionContext) {
 			await context.secrets.store("ascend.apiKey", userInput)
 			ascend.apiKey = await context.secrets.get("ascend.apiKey")
 
+			// refetch challenge, now we have an apiKey
 			ascend.getCurrentChallenge()
 		}
 	});
@@ -28,14 +29,10 @@ export function activate(context: vscode.ExtensionContext) {
 	const viewStatsCommand = vscode.commands.registerCommand('ascend.viewStats', async () => {
 		if (!ascend.repoName) return
 
-		const today = dayjs().utc().format('YYYY-MM-DD');
-		const codingTime = context.globalState.get<number>(`ascend.codingTime.${ascend.repoName}.${today}`);
-		const totalSeconds = Math.round((codingTime || 0) / 1000);
-		const hours = Math.floor(totalSeconds / 3600);
-		const remainingMinutes = Math.floor((totalSeconds % 3600) / 60);
-		const remainingSeconds = totalSeconds % 60;
+		const codingTime = await ascend.timeTracker.getTodayTime(ascend.repoName);
+		const {seconds, hours, minutes} = ascend.timeTracker.separateTime(codingTime)
 
-		vscode.window.showInformationMessage(`Today's coding time on ${ascend.repoName}: ${hours}h ${remainingMinutes}m ${remainingSeconds}s`);
+		vscode.window.showInformationMessage(`Today's coding time on ${ascend.repoName}: ${hours}h ${minutes}m ${seconds}s`);
 	});
 	context.subscriptions.push(viewStatsCommand);
 
