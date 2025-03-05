@@ -2,8 +2,8 @@ import dayjs from 'dayjs';
 import * as vscode from 'vscode';
 import fetch from 'node-fetch';
 
-// in ms -> 2 mn
-const MAX_TIME_BETWEEN_HEARTBEATS = 600_000
+// 5 minutes
+const MAX_TIME_BETWEEN_HEARTBEATS = 5 * 60 * 1000
 const DEBOUNCE = 300
 
 export class Ascend {
@@ -14,9 +14,11 @@ export class Ascend {
     private context
     public repoName: string | null = null
     private repoUrl: string | undefined
-    private apiKey: string | undefined
+    public apiKey: string | undefined
     private apiUrl: string | undefined
     private currentChallenge: any
+    private statusBarItem: vscode.StatusBarItem;
+    private statusBarVisible: boolean = true;
 
     async getRepo() {
         try {
@@ -31,7 +33,10 @@ export class Ascend {
                     if (remotes.length > 0) {
                         // should try for different remotes
                         const remoteUrl = remotes[0].fetchUrl || remotes[0].pushUrl;
+                        console.log(remotes[0])
                         this.repoUrl = remoteUrl
+                            ?.replace(/^git@github\.com:/, 'https://github.com/')
+                            .replace(/\.git$/, '');
                         if (remoteUrl) {
                             // Extract repo name from remote URL
                             const match = remoteUrl.match(/[\/:]([^\/]+?)(\.git)?$/);
@@ -49,6 +54,7 @@ export class Ascend {
 
     private async loadDailyCodingTime() {
         if (!this.repoName) return
+
         const today = new Date().toISOString().split('T')[0];
         const storageKey = `ascend.codingTime.${this.repoName}.${today}`;
         const storedTime = this.context.globalState.get<number>(storageKey);
@@ -56,8 +62,8 @@ export class Ascend {
     }
 
     private async saveDailyCodingTime() {
-        console.log("save coding time for", this.repoName)
         if (!this.repoName) return
+
         const today = dayjs().utc().format('YYYY-MM-DD');
         const storageKey = `ascend.codingTime.${this.repoName}.${today}`;
         await this.context.globalState.update(storageKey, this.dailyCodingTime);
@@ -89,31 +95,19 @@ export class Ascend {
         }
     }
 
-    private updateCodingTime() {
-        const now = Date.now();
-        if (this.lastActivityTime > 0) {
-            const timeDiff = now - this.lastActivityTime;
-            if (timeDiff < MAX_TIME_BETWEEN_HEARTBEATS) {
-                this.dailyCodingTime += timeDiff;
-                this.saveDailyCodingTime();
-                if (this.currentChallenge && this.dailyCodingTime >= this.currentChallenge.challengedata.duration) {
-                    this.validateDay()
-                }
-                this.lastActivityTime = now;
-            }
-        }
-        this.lastActivityTime = now;
-    }
-
     constructor(context: vscode.ExtensionContext) {
-        console.log("New ascend vs code extension")
-        console.log(this.apiUrl)
         this.context = context
+
+        this.statusBarVisible = this.context.globalState.get("ascend.statusBar.visible", true);
+        this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+        if (this.statusBarVisible) this.statusBarItem.show();
+        
+        context.subscriptions.push(this.statusBarItem);
+
         this.initialize()
     }
 
     async getCurrentChallenge() {
-        console.log(this.apiKey, this.repoUrl)
         if (!this.apiKey || !this.repoUrl) return
 
         try {
@@ -124,24 +118,18 @@ export class Ascend {
                     'Content-Type': 'application/json'
                 },
             });
-            
-            console.log(response.body)
-            if (!response.ok) {
-                console.log("response not ok", response.status)
-            }
 
+            if (!response.ok) return
             const challenge = await response.json();
-            console.log("challenge", challenge)
-            this.currentChallenge = challenge;
+            if (!challenge.error) this.currentChallenge = challenge;
+            this.updateStatusBar();
 
         } catch (error) {
             // @ts-ignore
-            if (error instanceof Error && error.message.includes('401')) {
+            if (error instanceof Error && error.message.includes('401'))
                 vscode.window.showErrorMessage('Invalid API key. Please update your API key.');
-            } else {
+            else
                 console.error("Error fetching current challenge:", error);
-            }
-
         }
     }
 
@@ -151,29 +139,23 @@ export class Ascend {
         this.apiKey = await this.context.secrets.get("ascend.apiKey")
         this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || 'https://api.ascend.com'
 
-        console.log(this.apiUrl)
         await this.getRepo()
         if (!this.repoName) return
 
         await this.getCurrentChallenge()
         await this.loadDailyCodingTime()
+        this.updateStatusBar()
         this.setupEventListeners()
-        console.log("Extension initialized for repo:", this.repoName)
     }
 
     private setupEventListeners(): void {
         let subscriptions: vscode.Disposable[] = []
-        // An Event which fires when the selection in an editor has changed.
+
         vscode.window.onDidChangeTextEditorSelection(this.onChangeSelection, this, subscriptions)
-
-        // An Event which fires when the active editor has changed. Note that the event also fires when the active editor changes to undefined.
         vscode.window.onDidChangeActiveTextEditor(this.onChangeTab, this, subscriptions)
-
-        // An event that is emitted when a text document is saved to disk.
         vscode.workspace.onDidSaveTextDocument(this.onSave, this, subscriptions)
 
         this.disposable = vscode.Disposable.from(...subscriptions);
-
     }
 
     private onChangeSelection(e: vscode.TextEditorSelectionChangeEvent) {
@@ -188,11 +170,52 @@ export class Ascend {
         if (this.debounceTimeoutId) clearTimeout(this.debounceTimeoutId)
 
         this.debounceTimeoutId = setTimeout(() => {
-            this.updateCodingTime();
+            const now = Date.now();
+            if (this.lastActivityTime > 0) {
+                const timeDiff = now - this.lastActivityTime;
+                if (timeDiff < MAX_TIME_BETWEEN_HEARTBEATS) {
+                    this.dailyCodingTime += timeDiff;
+                    this.saveDailyCodingTime();
+                    this.updateStatusBar();
+                    if (this.currentChallenge && this.dailyCodingTime >= this.currentChallenge.challengedata.duration * 60 * 60 * 1000) {
+                        this.validateDay()
+                    }
+                    this.lastActivityTime = now;
+                }
+            }
+            this.lastActivityTime = now;
         }, DEBOUNCE)
     }
 
+    private updateStatusBar() {
+        if (!this.statusBarVisible) return;
+        if (!this.apiKey) return this.statusBarItem.text = "$(rocket) Ascend: Click to setup";
+        if (!this.currentChallenge) return this.statusBarItem.text = "$(rocket) Ascend: No active challenge";
+
+        const totalSeconds = Math.round(this.dailyCodingTime / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+        const targetHours = this.currentChallenge.challengedata?.duration;
+        const progress = (this.dailyCodingTime / (60 * 60 * 10)) / targetHours;
+
+        this.statusBarItem.text = `$(rocket) Ascend: ${hours}h ${minutes}m / ${targetHours}h (${parseFloat(progress.toFixed(2))}%)`;
+    }
+
+    public toggleStatusBar() {
+        this.statusBarVisible = !this.statusBarVisible;
+        this.context.globalState.update("ascend.statusBar.visible", this.statusBarVisible);
+
+        if (this.statusBarVisible) {
+            this.statusBarItem.show();
+            this.updateStatusBar();
+        } else {
+            this.statusBarItem.hide();
+        }
+    }
+
     public dispose() {
+        this.statusBarItem.dispose();
         this.disposable?.dispose();
     }
 }

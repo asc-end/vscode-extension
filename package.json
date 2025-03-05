@@ -40,6 +40,10 @@
       {
         "command": "ascend.viewStats", 
         "title": "🚀 Ascend: View Coding Stats"
+      },
+      {
+        "command": "ascend.toggleStatusBar",
+        "title": "🚀 Ascend: Toggle Status Bar"
       }
     ]
   },

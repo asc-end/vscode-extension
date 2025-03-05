@@ -12,6 +12,12 @@ This VS Code extension is designed to work with the Ascend accountability app, h
 ### View Your Stats
 Use the "🚀 Ascend: View Coding Stats" command to check your coding progress for the day and see how close you are to completing your Ascend challenge.
 
+### Status Bar Controls
+The extension shows your coding progress in the status bar. You can:
+- View current progress with time tracked and percentage complete
+- Click the status bar item to view detailed stats
+- Toggle the status bar visibility using the "🚀 Ascend: Toggle Status Bar" command
+
 ### API Key Configuration 
 Connect to your Ascend account using the "🚀 Ascend: API key" command to link your coding sessions with your challenges.
 
