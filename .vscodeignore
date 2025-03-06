@@ -3,14 +3,11 @@ node_modules/
 src/
 .vscode/**
 .vscode-test/**
-.vscode-test.mjs
 test/**
 **/test/**
 **/*.map
 .gitignore
 tsconfig.json
-webpack.config.js
-eslint.config.mjs
 -**/tsconfig.json
 -**/eslint.config.mjs
 -**/*.map
