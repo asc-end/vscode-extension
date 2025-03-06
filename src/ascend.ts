@@ -5,6 +5,7 @@ import dayjs from 'dayjs';
 const DEBOUNCE = 300
 const DEFAULT_API_URL = 'https://api.ascend.sh';
 
+
 export class Ascend {
     private disposable: vscode.Disposable | null = null;
     private debounceTimeoutId: any | null = null
@@ -46,24 +47,38 @@ export class Ascend {
     }
 
     private async validateDay() {
-        if (!this.apiKey || !this.challenge) return
-
+        if (!this.apiKey || !this.challenge) return;
+        const extension = this.context.extension
         try {
             const response = await fetch(`${this.apiUrl}/vscode/challenge/validate-day`, {
                 method: 'POST',
                 headers: {
                     'x-api-key': this.apiKey,
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(this.challenge)
+                body: JSON.stringify({
+                    solana_id: this.challenge.solana_id,
+                    author: this.challenge.author,
+                    extension,
+                    state: this.context.globalState
+                })
             });
 
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
             await response.json();
 
-            await this.getCurrentChallenge()
+            await this.getCurrentChallenge();
         } catch (error) {
             console.error("Error validating day:", error);
+            if (error instanceof Error) {
+                if (error.message.includes('401')) {
+                    vscode.window.showErrorMessage('Invalid validation attempt. Please try again.');
+                } else {
+                    vscode.window.showErrorMessage('Failed to validate day. Please try again later.');
+                }
+            }
         }
     }
 
@@ -153,8 +168,8 @@ export class Ascend {
 
             if (this.challenge?.challengedata?.duration) {
                 const goal = this.challenge.challengedata.duration * ONE_HOUR_IN_MS;
-                const start = dayjs.utc(this.challenge.started).add(this.challenge.nb_done, "day")
-                const isDayDone = start.isAfter(dayjs())
+                const start = dayjs.utc(this.challenge.started).add(this.challenge.nb_done, "day");
+                const isDayDone = start.isAfter(dayjs());
 
                 if (this.dailyCodingTime >= goal && !isDayDone) {
                     await this.validateDay();
