@@ -59,7 +59,7 @@ export class Ascend {
         this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || DEFAULT_API_URL;
 
         await this.getRepo()
-        if (!this.repoName){
+        if (!this.repoName) {
             this.statusBarItem.text = "$(rocket) Ascend: No Git repository detected.";
             return
         }
@@ -229,6 +229,9 @@ export class Ascend {
 
         const nbDone = this.challenge.nb_done;
         let start = dayjs.utc(this.challenge.started).add(nbDone, "day");
+        const dayDone = start.isAfter(dayjs());
+        if (dayDone)
+            start.subtract(1, "day")
         const end = start.add(1, "day");
 
         this.challengeTime = await this.timeTracker.getTimeInWindow({
@@ -241,7 +244,7 @@ export class Ascend {
         const goal = this.challenge.challengedata?.duration;
         const progress = (this.challengeTime / (goal * ONE_HOUR_IN_MS) * 100).toFixed();
         const dueTime = end.tz(this.timeTracker.timezone).format("HH:mm");
-        const dayDone = start.isAfter(dayjs());
+
         if (this.challengeTime > this.challenge.challengedata.duration * ONE_HOUR_IN_MS && !dayDone)
             this.validateDay()
 
