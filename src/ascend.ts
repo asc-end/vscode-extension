@@ -163,8 +163,6 @@ export class Ascend {
         }
     }
 
-
-
     private setupEventListeners(): void {
         let subscriptions: vscode.Disposable[] = []
 
@@ -244,7 +242,7 @@ export class Ascend {
         const progress = (this.challengeTime / (goal * ONE_HOUR_IN_MS) * 100).toFixed();
         const dueTime = end.tz(this.timeTracker.timezone).format("HH:mm");
         const dayDone = start.isAfter(dayjs());
-        if (this.challengeTime > this.challenge.challengedata.duration && !dayDone)
+        if (this.challengeTime > this.challenge.challengedata.duration * ONE_HOUR_IN_MS && !dayDone)
             this.validateDay()
 
         const text = `$(rocket) ${challengeTimeStats.hours}h ${challengeTimeStats.minutes}m${dayDone ?
