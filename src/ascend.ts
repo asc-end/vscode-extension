@@ -5,12 +5,10 @@ import dayjs from 'dayjs';
 const DEBOUNCE = 300
 const DEFAULT_API_URL = 'https://api.ascend.sh';
 
-
 export class Ascend {
     private disposable: vscode.Disposable | null = null;
     private debounceTimeoutId: any | null = null
     private lastActivityTime: number = 0
-    private dailyCodingTime: number = 0
     private context
     public repoName: string | null = null
     private repoUrl: string | undefined
@@ -20,15 +18,74 @@ export class Ascend {
     private statusBarItem: vscode.StatusBarItem;
     private statusBarVisible: boolean = true;
     public timeTracker: TimeTracker;
+    private dailyTime: number = 0
+    private challengeTime: number = 0
+
+    constructor(context: vscode.ExtensionContext) {
+        try {
+            this.context = context;
+
+            // Initialize status bar
+            this.statusBarVisible = this.context.globalState.get("ascend.statusBar.visible", true);
+            this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+
+            // Show initializing state
+            this.statusBarItem.text = "$(rocket) Ascend: Initializing...";
+
+            if (this.statusBarVisible) {
+                this.statusBarItem.show();
+            }
+            context.subscriptions.push(this.statusBarItem);
+
+            // Initialize time tracker
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            this.timeTracker = new TimeTracker(context, timezone);
+
+            // Initialize async components
+            this.initialize().catch(error => {
+                console.error('Error in Ascend initialization:', error);
+                throw error;
+            });
+        } catch (error) {
+            console.error('Error in Ascend constructor:', error);
+            throw error;
+        }
+    }
+
+    private async initialize() {
+        // wait for the github extension to load
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        this.apiKey = await this.context.secrets.get("ascend.apiKey");
+        this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || DEFAULT_API_URL;
+
+        await this.getRepo()
+        if (!this.repoName){
+            this.statusBarItem.text = "$(rocket) Ascend: No Git repository detected.";
+            return
+        }
+
+        await this.getCurrentChallenge()
+        this.dailyTime = await this.timeTracker.getTodayTime(this.repoName);
+        await this.updateStatusBar()
+        this.setupEventListeners()
+    }
 
     private async getRepo() {
         try {
-            const gitExtension = vscode.extensions.getExtension('vscode.git')?.exports;
+            const gitExtension = vscode.extensions.getExtension('vscode.git');
+
             if (!gitExtension) return;
 
-            const gitAPI = gitExtension.getAPI(1);
-            const repo = gitAPI.repositories[0];
-            if (!repo?.state.remotes.length) return;
+            await gitExtension.activate();
+
+            const gitAPI = gitExtension.exports.getAPI(1);
+            if (!gitAPI) return
+
+            const repositories = gitAPI.repositories;
+            if (!repositories?.length) return;
+
+            const repo = repositories[0];
+            if (!repo?.state?.remotes?.length) return;
 
             const remote = repo.state.remotes[0];
             const remoteUrl = remote.fetchUrl || remote.pushUrl;
@@ -40,9 +97,8 @@ export class Ascend {
 
             const match = remoteUrl.match(/[\/:]([^\/]+?)(\.git)?$/);
             this.repoName = match?.[1] ?? null;
-
         } catch (error) {
-            console.error("Error getting repo name:", error);
+            throw error; // Re-throw to handle in activate()
         }
     }
 
@@ -98,7 +154,6 @@ export class Ascend {
             const challenge = await response.json();
             if (!(challenge as any).error) this.challenge = challenge;
             this.updateStatusBar();
-
         } catch (error) {
             // @ts-ignore
             if (error instanceof Error && error.message.includes('401'))
@@ -108,35 +163,7 @@ export class Ascend {
         }
     }
 
-    constructor(context: vscode.ExtensionContext) {
-        this.context = context
 
-        this.statusBarVisible = this.context.globalState.get("ascend.statusBar.visible", true);
-        this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-        if (this.statusBarVisible) this.statusBarItem.show();
-
-        context.subscriptions.push(this.statusBarItem);
-
-        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
-        this.timeTracker = new TimeTracker(context, timezone);
-
-        this.initialize()
-    }
-
-    private async initialize() {
-        // wait for the github extension to load
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        this.apiKey = await this.context.secrets.get("ascend.apiKey");
-        this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || DEFAULT_API_URL;
-
-        await this.getRepo()
-        if (!this.repoName) return
-
-        await this.getCurrentChallenge()
-        this.dailyCodingTime = await this.timeTracker.getTodayTime(this.repoName);
-        this.updateStatusBar()
-        this.setupEventListeners()
-    }
 
     private setupEventListeners(): void {
         let subscriptions: vscode.Disposable[] = []
@@ -152,54 +179,81 @@ export class Ascend {
         if (this.debounceTimeoutId) clearTimeout(this.debounceTimeoutId);
 
         this.debounceTimeoutId = setTimeout(async () => {
-            const now = dayjs().utc().valueOf();
-            if (!this.lastActivityTime || !this.repoName) return this.lastActivityTime = now;
+            try {
+                const now = dayjs().utc().valueOf();
 
-            this.lastActivityTime = now;
-
-            const timeDiff = now - this.lastActivityTime;
-            if (timeDiff >= MAX_TIME_BETWEEN_RECORDS) return
-
-            const start = this.lastActivityTime
-            await this.timeTracker.recordSession({ start, end: now }, this.repoName);
-
-            this.dailyCodingTime = await this.timeTracker.getTodayTime(this.repoName);
-            this.updateStatusBar();
-
-            if (this.challenge?.challengedata?.duration) {
-                const goal = this.challenge.challengedata.duration * ONE_HOUR_IN_MS;
-                const start = dayjs.utc(this.challenge.started).add(this.challenge.nb_done, "day");
-                const isDayDone = start.isAfter(dayjs());
-
-                if (this.dailyCodingTime >= goal && !isDayDone) {
-                    await this.validateDay();
+                if (!this.lastActivityTime || !this.repoName) {
+                    this.lastActivityTime = now;
+                    return;
                 }
+
+                if (now - this.lastActivityTime >= MAX_TIME_BETWEEN_RECORDS) {
+                    this.lastActivityTime = now;
+                    return;
+                }
+
+                await this.timeTracker.recordSession({ start: this.lastActivityTime, end: now }, this.repoName);
+
+                this.lastActivityTime = now;
+                this.dailyTime = await this.timeTracker.getTodayTime(this.repoName);
+                this.updateStatusBar();
+
+            } catch (error) {
+                console.error('Error in onEvent:', error);
             }
         }, DEBOUNCE);
     }
 
     private async updateStatusBar() {
-        if (!this.statusBarVisible || !this.repoName || !this.apiKey) return;
-        if (!this.challenge) return this.statusBarItem.text = "$(rocket) Ascend: No active challenge";
+        if (!this.statusBarVisible) return;
+
+        if (!this.challenge)
+            this.updateStatusBarWithoutChallenge();
+        else
+            this.updateStatusBarWithChallenge();
+    }
+
+    private async updateStatusBarWithoutChallenge() {
+        const { hours, minutes } = this.timeTracker.separateTime(this.dailyTime);
+
+        this.statusBarItem.text = `$(rocket) Today: ${hours}h ${minutes}m | No active challenge`;
+        this.statusBarItem.tooltip = "Ascend: Click to create a challenge at app.ascend.sh";
+        this.statusBarItem.command = {
+            title: 'Open Ascend',
+            command: 'vscode.open',
+            arguments: [vscode.Uri.parse('https://app.ascend.sh')]
+        };
+    }
+
+    private async updateStatusBarWithChallenge() {
+        if (!this.repoName) return
+        const { hours, minutes } = this.timeTracker.separateTime(this.dailyTime);
 
         const nbDone = this.challenge.nb_done;
+        let start = dayjs.utc(this.challenge.started).add(nbDone, "day");
+        const end = start.add(1, "day");
 
-        let start = dayjs.utc(this.challenge.started).add(nbDone, "day")
+        this.challengeTime = await this.timeTracker.getTimeInWindow({
+            start: start.valueOf(),
+            end: end.valueOf()
+        }, this.repoName);
 
-        const dayDone = start.isAfter(dayjs())
-        if (dayDone) start = start.subtract(1, "day")
-        const end = start.add(1, "day")
-
-        const time = await this.timeTracker.getTimeInWindow({ start: start.valueOf(), end: end.valueOf() }, this.repoName)
-        const { hours, minutes } = this.timeTracker.separateTime(time)
+        const challengeTimeStats = this.timeTracker.separateTime(this.challengeTime);
 
         const goal = this.challenge.challengedata?.duration;
-        const progress = (time / (goal * ONE_HOUR_IN_MS) * 100).toFixed();
-        const dueTime = end.tz(this.timeTracker.timezone).format("HH:mm")
+        const progress = (this.challengeTime / (goal * ONE_HOUR_IN_MS) * 100).toFixed();
+        const dueTime = end.tz(this.timeTracker.timezone).format("HH:mm");
+        const dayDone = start.isAfter(dayjs());
+        if (this.challengeTime > this.challenge.challengedata.duration && !dayDone)
+            this.validateDay()
 
-        const text = `$(rocket) ${hours}h ${minutes}m${dayDone ? ' | Day done $(check)' : ` (${progress}%) | Due ${dueTime}`} | Day ${dayDone ? nbDone - 1 : nbDone} / ${this.challenge.time}`
+        const text = `$(rocket) ${challengeTimeStats.hours}h ${challengeTimeStats.minutes}m${dayDone ?
+            ' | Day done $(check)' :
+            ` (${progress}%) | Due ${dueTime}`
+            } | Day ${dayDone ? nbDone - 1 : nbDone} / ${this.challenge.time}`;
 
         this.statusBarItem.text = text;
+        this.statusBarItem.tooltip = `Ascend: Challenge time: ${challengeTimeStats.hours}h ${challengeTimeStats.minutes}m | Today's total time: ${hours}h ${minutes}m`;
     }
 
     public toggleStatusBar() {

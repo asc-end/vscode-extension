@@ -6,38 +6,52 @@ dayjs.extend(utc)
 
 var ascend: Ascend
 export function activate(context: vscode.ExtensionContext) {
-	ascend = new Ascend(context)
+	try {
+		ascend = new Ascend(context)
 
-	const apiKeyCommand = vscode.commands.registerCommand('ascend.apiKey', async () => {
-		const currentKey = await context.secrets.get("ascend.apiKey")
+		const apiKeyCommand = vscode.commands.registerCommand('ascend.apiKey', async () => {
+			const currentKey = await context.secrets.get("ascend.apiKey")
 
-		const userInput = await vscode.window.showInputBox({
-			prompt: 'Enter Ascend API key',
-			placeHolder: currentKey ?? 'Type something here...'
+			const userInput = await vscode.window.showInputBox({
+				prompt: 'Enter Ascend API key',
+				placeHolder: currentKey ?? 'Type something here...'
+			});
+
+			if (userInput) {
+				await context.secrets.store("ascend.apiKey", userInput)
+				ascend.apiKey = await context.secrets.get("ascend.apiKey")
+
+				// refetch challenge, now we have an apiKey
+				ascend.getCurrentChallenge()
+			}
 		});
+		context.subscriptions.push(apiKeyCommand);
 
-		if (userInput) {
-			await context.secrets.store("ascend.apiKey", userInput)
-			ascend.apiKey = await context.secrets.get("ascend.apiKey")
+		const viewStatsCommand = vscode.commands.registerCommand('ascend.viewStats', async () => {
+			try {
+				if (!ascend.repoName) {
+					vscode.window.showInformationMessage('No Git repository detected. Please open a Git repository to track time.');
+					return;
+				}
 
-			// refetch challenge, now we have an apiKey
-			ascend.getCurrentChallenge()
-		}
-	});
-	context.subscriptions.push(apiKeyCommand);
+				const codingTime = await ascend.timeTracker.getTodayTime(ascend.repoName);
+				const {seconds, hours, minutes} = ascend.timeTracker.separateTime(codingTime);
 
-	const viewStatsCommand = vscode.commands.registerCommand('ascend.viewStats', async () => {
-		if (!ascend.repoName) return
+				vscode.window.showInformationMessage(
+					`Today's coding time on ${ascend.repoName}: ${hours}h ${minutes}m ${seconds}s`
+				);
+			} catch (error) {
+				console.error('Error in viewStats command:', error);
+				vscode.window.showErrorMessage('Failed to get coding stats: ' + (error instanceof Error ? error.message : String(error)));
+			}
+		});
+		context.subscriptions.push(viewStatsCommand);
 
-		const codingTime = await ascend.timeTracker.getTodayTime(ascend.repoName);
-		const {seconds, hours, minutes} = ascend.timeTracker.separateTime(codingTime)
+		const toggleStatusBarCommand = vscode.commands.registerCommand('ascend.toggleStatusBar', () =>  ascend.toggleStatusBar());
+		context.subscriptions.push(toggleStatusBarCommand);
 
-		vscode.window.showInformationMessage(`Today's coding time on ${ascend.repoName}: ${hours}h ${minutes}m ${seconds}s`);
-	});
-	context.subscriptions.push(viewStatsCommand);
-
-	const toggleStatusBarCommand = vscode.commands.registerCommand('ascend.toggleStatusBar', () =>  ascend.toggleStatusBar());
-	context.subscriptions.push(toggleStatusBarCommand);
+	} catch (error) {
+	}
 }
 
 export function deactivate() {
