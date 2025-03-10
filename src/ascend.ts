@@ -230,8 +230,10 @@ export class Ascend {
         const nbDone = this.challenge.nb_done;
         let start = dayjs.utc(this.challenge.started).add(nbDone, "day");
         const dayDone = start.isAfter(dayjs());
+
         if (dayDone)
-            start.subtract(1, "day")
+            start = start.subtract(1, "day")
+
         const end = start.add(1, "day");
 
         this.challengeTime = await this.timeTracker.getTimeInWindow({
