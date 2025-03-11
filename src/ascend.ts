@@ -128,13 +128,13 @@ export class Ascend {
             await this.getCurrentChallenge();
         } catch (error) {
             console.error("Error validating day:", error);
-            if (error instanceof Error) {
-                if (error.message.includes('401')) {
-                    vscode.window.showErrorMessage('Invalid validation attempt. Please try again.');
-                } else {
-                    vscode.window.showErrorMessage('Failed to validate day. Please try again later.');
-                }
-            }
+            // if (error instanceof Error) {
+            //     if (error.message.includes('401')) {
+            //         vscode.window.showErrorMessage('Invalid validation attempt. Please try again.');
+            //     } else {
+            //         vscode.window.showErrorMessage('Failed to validate day. Please try again later.');
+            //     }
+            // }
         }
     }
 
