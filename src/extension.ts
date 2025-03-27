@@ -29,16 +29,16 @@ export function activate(context: vscode.ExtensionContext) {
 
 		const viewStatsCommand = vscode.commands.registerCommand('ascend.viewStats', async () => {
 			try {
-				if (!ascend.repoName) {
+				if (!ascend.repo.name) {
 					vscode.window.showInformationMessage('No Git repository detected. Please open a Git repository to track time.');
 					return;
 				}
 
-				const codingTime = await ascend.timeTracker.getTodayTime(ascend.repoName);
+				const codingTime = await ascend.timeTracker.getTodayTime(ascend.repo.name);
 				const {seconds, hours, minutes} = ascend.timeTracker.separateTime(codingTime);
 
 				vscode.window.showInformationMessage(
-					`Today's coding time on ${ascend.repoName}: ${hours}h ${minutes}m ${seconds}s`
+					`Today's coding time on ${ascend.repo.name}: ${hours}h ${minutes}m ${seconds}s`
 				);
 			} catch (error) {
 				console.error('Error in viewStats command:', error);
@@ -55,5 +55,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-	ascend.dispose()
+	if (ascend) {
+		ascend.dispose();
+	}
 }

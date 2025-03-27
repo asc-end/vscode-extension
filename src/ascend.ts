@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { MAX_TIME_BETWEEN_RECORDS, ONE_HOUR_IN_MS, TimeTracker } from './timeTracking';
+import { MAX_TIME_BETWEEN_RECORDS, ONE_HOUR_IN_MS, TimeTracker, UserInfo } from './timeTracking';
 import dayjs from 'dayjs';
 
-const DEBOUNCE = 300
+const DEBOUNCE = 1000
 const DEFAULT_API_URL = 'https://api.ascend.sh';
 
 export class Ascend {
@@ -10,14 +10,17 @@ export class Ascend {
     private debounceTimeoutId: any | null = null
     private lastActivityTime: number = 0
     private context
-    public repoName: string | null = null
-    private repoUrl: string | undefined
+    public repo: {
+        name?: string,
+        url?: string,
+        id?: string
+    } = {}
     public apiKey: string | undefined
     private apiUrl: string | undefined
     private challenge: any
     private statusBarItem: vscode.StatusBarItem;
     private statusBarVisible: boolean = true;
-    public timeTracker: TimeTracker;
+    public timeTracker!: TimeTracker;
     private dailyTime: number = 0
     private challengeTime: number = 0
 
@@ -37,15 +40,13 @@ export class Ascend {
             }
             context.subscriptions.push(this.statusBarItem);
 
-            // Initialize time tracker
-            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            this.timeTracker = new TimeTracker(context, timezone);
-
             // Initialize async components
             this.initialize().catch(error => {
                 console.error('Error in Ascend initialization:', error);
                 throw error;
             });
+
+
         } catch (error) {
             console.error('Error in Ascend constructor:', error);
             throw error;
@@ -58,14 +59,20 @@ export class Ascend {
         this.apiKey = await this.context.secrets.get("ascend.apiKey");
         this.apiUrl = vscode.workspace.getConfiguration('ascend').get('apiUrl') || DEFAULT_API_URL;
 
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        this.timeTracker = new TimeTracker(this.context, timezone, this.apiUrl, this.apiKey);
         await this.getRepo()
-        if (!this.repoName) {
+        if (!this.repo.name) {
             this.statusBarItem.text = "$(rocket) Ascend: No Git repository detected.";
             return
         }
 
         await this.getCurrentChallenge()
-        this.dailyTime = await this.timeTracker.getTodayTime(this.repoName);
+
+        // Initialize pending uploads from previous sessions
+        await this.timeTracker.initializePendingUploads();
+
+        this.dailyTime = await this.timeTracker.getTodayTime(this.repo.name);
         await this.updateStatusBar()
         this.setupEventListeners()
     }
@@ -86,17 +93,16 @@ export class Ascend {
 
             const repo = repositories[0];
             if (!repo?.state?.remotes?.length) return;
-
             const remote = repo.state.remotes[0];
             const remoteUrl = remote.fetchUrl || remote.pushUrl;
             if (!remoteUrl) return;
 
-            this.repoUrl = remoteUrl
+            this.repo.url = remoteUrl
                 .replace(/^git@github\.com:/, 'https://github.com/')
                 .replace(/\.git$/, '');
 
             const match = remoteUrl.match(/[\/:]([^\/]+?)(\.git)?$/);
-            this.repoName = match?.[1] ?? null;
+            this.repo.name = match?.[1];
         } catch (error) {
             throw error; // Re-throw to handle in activate()
         }
@@ -128,21 +134,14 @@ export class Ascend {
             await this.getCurrentChallenge();
         } catch (error) {
             console.error("Error validating day:", error);
-            // if (error instanceof Error) {
-            //     if (error.message.includes('401')) {
-            //         vscode.window.showErrorMessage('Invalid validation attempt. Please try again.');
-            //     } else {
-            //         vscode.window.showErrorMessage('Failed to validate day. Please try again later.');
-            //     }
-            // }
         }
     }
 
     public async getCurrentChallenge() {
-        if (!this.apiKey || !this.repoUrl) return
+        if (!this.apiKey || !this.repo.url) return
 
         try {
-            const response = await fetch(`${this.apiUrl}/vscode/challenge?repo_url=${encodeURIComponent(this.repoUrl)}`, {
+            const response = await fetch(`${this.apiUrl}/vscode/challenge?repo_url=${encodeURIComponent(this.repo.url)}`, {
                 method: 'GET',
                 headers: {
                     'x-api-key': this.apiKey,
@@ -180,7 +179,7 @@ export class Ascend {
             try {
                 const now = dayjs().utc().valueOf();
 
-                if (!this.lastActivityTime || !this.repoName) {
+                if (!this.lastActivityTime || !this.repo.name) {
                     this.lastActivityTime = now;
                     return;
                 }
@@ -190,10 +189,10 @@ export class Ascend {
                     return;
                 }
 
-                await this.timeTracker.recordSession({ start: this.lastActivityTime, end: now }, this.repoName);
+                await this.timeTracker.recordSession({ start: this.lastActivityTime, end: now }, this.repo.name);
 
                 this.lastActivityTime = now;
-                this.dailyTime = await this.timeTracker.getTodayTime(this.repoName);
+                this.dailyTime = await this.timeTracker.getTodayTime(this.repo.name);
                 this.updateStatusBar();
 
             } catch (error) {
@@ -224,7 +223,7 @@ export class Ascend {
     }
 
     private async updateStatusBarWithChallenge() {
-        if (!this.repoName) return
+        if (!this.repo.name) return
         const { hours, minutes } = this.timeTracker.separateTime(this.dailyTime);
 
         const nbDone = this.challenge.nb_done;
@@ -239,7 +238,7 @@ export class Ascend {
         this.challengeTime = await this.timeTracker.getTimeInWindow({
             start: start.valueOf(),
             end: end.valueOf()
-        }, this.repoName);
+        }, this.repo.name);
 
         const challengeTimeStats = this.timeTracker.separateTime(this.challengeTime);
 
@@ -273,6 +272,6 @@ export class Ascend {
 
     public dispose() {
         this.statusBarItem.dispose();
-        this.disposable?.dispose();
+        if (this.disposable) this.disposable.dispose();
     }
 }
